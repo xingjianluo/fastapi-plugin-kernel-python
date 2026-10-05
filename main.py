@@ -10,6 +10,7 @@ from app.config.loader import ConfigLoader, FieldSpec
 from app.config.sources import env_source
 from app.plugins.assembler import PluginAssembler
 from app.plugins.registry import PluginRegistry
+from app.plugins.reloader import PluginReloader
 
 CONFIG_SPECS = [
     FieldSpec("host", str, default="127.0.0.1"),
@@ -41,26 +42,35 @@ class DemoPlugin:
         pass
 
 
-def create_app() -> FastAPI:
+def default_plugin_provider() -> list[DemoPlugin]:
+    """默认插件集合；POST /reload 会重新调用它以拿到目标插件集合。"""
+    return [
+        DemoPlugin("core"),
+        DemoPlugin("metrics", dependencies=["core"]),
+    ]
+
+
+def create_app(plugin_provider=default_plugin_provider) -> FastAPI:
     # 1) 分层配置：缺省值 < 环境变量（可继续叠加文件/外部覆盖来源）
     loader = ConfigLoader(CONFIG_SPECS)
     resolved = loader.load([env_source()])
 
-    # 2) 插件装配
+    # 2) 插件装配 + 运行期热重载
     registry = PluginRegistry()
-    registry.register(DemoPlugin("core"))
-    registry.register(DemoPlugin("metrics", dependencies=["core"]))
     assembler = PluginAssembler(registry)
+    reloader = PluginReloader(registry, assembler)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        assembler.assemble()
+        reloader.reload(plugin_provider())  # 启动即第一轮装配
         yield
         assembler.dispose()
 
     app = FastAPI(lifespan=lifespan)
     app.state.resolved_config = resolved
     app.state.assembler = assembler
+    app.state.reloader = reloader
+    app.state.plugin_provider = plugin_provider
     app.include_router(build_router())
     return app
 

@@ -31,3 +31,14 @@ class PluginRegistry:
         """返回注册表的不可变快照。"""
         with self._lock:
             return dict(self._plugins)
+
+    def swap(self, plugins: dict[str, Plugin]) -> dict[str, Plugin]:
+        """原子地用新集合整体替换注册表内容，返回被替换掉的旧快照。
+
+        供运行期热重载使用：调用方需先完成旧插件的释放，
+        本方法只保证替换动作本身不可被并发读取观察到中间态。
+        """
+        with self._lock:
+            old = dict(self._plugins)
+            self._plugins = dict(plugins)
+            return old

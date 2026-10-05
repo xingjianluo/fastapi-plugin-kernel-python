@@ -18,6 +18,7 @@ class PluginState(enum.Enum):
     REGISTERED = "registered"
     INITIALIZED = "initialized"
     FAILED = "failed"
+    BLOCKED = "blocked"  # 被失败的上游牵连而不可用（热重载时由 PluginReloader 标记）
     DISPOSED = "disposed"
 
 
@@ -136,22 +137,45 @@ class PluginAssembler:
                     self._init_order.append(name)
             return self.statuses()
 
-    def dispose(self) -> None:
-        """按装配逆序释放已初始化插件，各只生效一次。"""
+    def dispose(self) -> dict[str, str]:
+        """按装配逆序释放已初始化插件，各只生效一次。
+
+        单个插件 dispose 抛错不会中断其余插件的释放；错误被记录到
+        该插件状态的 error 字段（可查询），并汇总到返回值中。
+        返回 {插件名: 错误信息}，全部成功时为空 dict。
+        """
+        errors: dict[str, str] = {}
         with self._lock:
             plugins = self._registry.all()
             for name in reversed(self._init_order):
                 status = self._states.get(name)
                 if not status or status.state is not PluginState.INITIALIZED:
                     continue
+                error: str | None = None
                 try:
                     plugins[name].dispose()
+                except Exception as exc:  # 隔离：单个释放失败不卡住其它插件
+                    error = repr(exc)
+                    errors[name] = error
                 finally:
                     # 即使 dispose 抛错也标记为已释放，保证只生效一次、不泄漏
                     self._states[name] = PluginStatus(
-                        name=name, state=PluginState.DISPOSED
+                        name=name, state=PluginState.DISPOSED, error=error
                     )
             self._init_order.clear()
+        return errors
+
+    def replace_states(
+        self, states: dict[str, PluginStatus], init_order: list[str]
+    ) -> None:
+        """原子地整体替换状态表与初始化顺序（供热重载提交一整轮结果）。
+
+        在一次锁临界区内完成切换：并发读取要么看到上一整轮的完整快照，
+        要么看到新一整轮的完整快照，永远不会读到装配到一半的中间态。
+        """
+        with self._lock:
+            self._states = dict(states)
+            self._init_order = list(init_order)
 
     # ---------- 状态查询 ----------
 
