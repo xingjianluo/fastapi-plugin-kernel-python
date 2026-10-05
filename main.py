@@ -1,4 +1,4 @@
-"""服务入口：分层配置加载 + 插件装配。"""
+"""服务入口：分层配置加载 + 插件装配 + 运行期热重载。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -8,8 +8,7 @@ from fastapi import FastAPI
 from app.api.routes import build_router
 from app.config.loader import ConfigLoader, FieldSpec
 from app.config.sources import env_source
-from app.plugins.assembler import PluginAssembler
-from app.plugins.registry import PluginRegistry
+from app.plugins.manager import PluginManager
 
 CONFIG_SPECS = [
     FieldSpec("host", str, default="127.0.0.1"),
@@ -46,21 +45,18 @@ def create_app() -> FastAPI:
     loader = ConfigLoader(CONFIG_SPECS)
     resolved = loader.load([env_source()])
 
-    # 2) 插件装配
-    registry = PluginRegistry()
-    registry.register(DemoPlugin("core"))
-    registry.register(DemoPlugin("metrics", dependencies=["core"]))
-    assembler = PluginAssembler(registry)
+    # 2) 插件管理器：支持运行期热重载（manager.reload(add=..., remove=...)）
+    manager = PluginManager()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        assembler.assemble()
+        manager.reload(add=[DemoPlugin("core"), DemoPlugin("metrics", ["core"])])
         yield
-        assembler.dispose()
+        manager.shutdown()
 
     app = FastAPI(lifespan=lifespan)
     app.state.resolved_config = resolved
-    app.state.assembler = assembler
+    app.state.plugin_manager = manager
     app.include_router(build_router())
     return app
 

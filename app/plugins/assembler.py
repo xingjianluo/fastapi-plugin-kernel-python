@@ -19,6 +19,7 @@ class PluginState(enum.Enum):
     INITIALIZED = "initialized"
     FAILED = "failed"
     DISPOSED = "disposed"
+    BLOCKED = "blocked"  # 被失败的上游插件牵连，不可用
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class PluginStatus:
     name: str
     state: PluginState
     error: str | None = None
+    blocked_by: tuple[str, ...] = ()  # 牵连本插件的直接不可用上游
 
 
 class PluginAssembler:
